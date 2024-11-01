@@ -1,0 +1,8 @@
+# Use C++11 standard
+PKG_CXXFLAGS = -std=c++11
+
+# Enable dynamic lookup for macOS to resolve symbols at runtime
+PKG_LIBS = -undefined dynamic_lookup
+
+# List of object files to ensure inclusion in compilation
+OBJS = cc_cap.o cc_cen.o cc_coun.o cc_dupl.o cc_equ.o cc_gbif.o cc_inst.o cc_iucn.o cc_outl.o cc_sea.o cc_urb.o cc_zero.o cc_val.o clean_coordinates.o
