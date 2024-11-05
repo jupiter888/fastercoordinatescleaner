@@ -1,6 +1,7 @@
 #include <Rcpp.h>
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 using namespace Rcpp;
 
@@ -30,68 +31,102 @@ double inline_euclidean_distance(double lon1, double lat1, double lon2, double l
 }
 
 // [[Rcpp::export]]
-LogicalVector cc_outl_cpp(NumericVector longitudes, NumericVector latitudes,
+LogicalVector cc_outl_cpp(DataFrame df,
+                          std::string lon_col, std::string lat_col, std::string species_col,
                           std::string method = "quantile", double mltpl = 1.5,
                           double tdi = 1000, int min_occs = 7, bool intrinsic = false) {
+  NumericVector longitudes = df[lon_col];
+  NumericVector latitudes = df[lat_col];
+  CharacterVector species = df[species_col];
 
   int n = longitudes.size();
   LogicalVector outliers(n, false);
-  NumericMatrix dist_geo(n, n);
 
-  if (intrinsic) {
-    for (int i = 0; i < n; ++i) {
-      for (int j = i + 1; j < n; ++j) {
-        dist_geo(i, j) = inline_euclidean_distance(longitudes[i], latitudes[i], longitudes[j], latitudes[j]);
-        dist_geo(j, i) = dist_geo(i, j);
-      }
-    }
-  }
-
-  NumericVector mean_distances(n);
-
+  // Group indices by species
+  std::unordered_map<std::string, std::vector<int>> species_map;
   for (int i = 0; i < n; ++i) {
-    double total_dist = 0.0;
-    int count = 0;
-    for (int j = 0; j < n; ++j) {
-      if (i != j) {
-        total_dist += dist_geo(i, j);
-        count++;
-      }
-    }
-    mean_distances[i] = total_dist / count;
+    species_map[as<std::string>(species[i])].push_back(i);
   }
 
-  if (method == "quantile") {
-    NumericVector sorted_mean = clone(mean_distances).sort();
-    double q75 = sorted_mean[n * 3 / 4];
-    double iqr = q75 - sorted_mean[n / 4];
-    double threshold = q75 + mltpl * iqr;
+  // Iterate through each species
+  for (const auto& entry : species_map) {
+    const std::vector<int>& indices = entry.second;
+    int species_size = indices.size();
 
-    for (int i = 0; i < n; ++i) {
-      if (mean_distances[i] > threshold) {
-        outliers[i] = true;
-      }
+    if (species_size < min_occs) {
+      continue;
     }
-  } else if (method == "mad") {
-    double median_val = inline_median(mean_distances);
-    double mad_val = inline_mad(mean_distances);
-    double threshold = median_val + mltpl * mad_val;
 
-    for (int i = 0; i < n; ++i) {
-      if (mean_distances[i] > threshold) {
-        outliers[i] = true;
-      }
-    }
-  } else if (method == "distance") {
-    for (int i = 0; i < n; ++i) {
-      double min_dist = R_PosInf;
-      for (int j = 0; j < n; ++j) {
-        if (i != j && dist_geo(i, j) < min_dist) {
-          min_dist = dist_geo(i, j);
+    NumericVector mean_distances(species_size);
+    NumericMatrix dist_geo(species_size, species_size);
+
+    // Compute distance matrix if intrinsic is true
+    if (intrinsic) {
+      for (int i = 0; i < species_size; ++i) {
+        for (int j = i + 1; j < species_size; ++j) {
+          double dist = inline_euclidean_distance(longitudes[indices[i]], latitudes[indices[i]],
+                                                  longitudes[indices[j]], latitudes[indices[j]]);
+          dist_geo(i, j) = dist;
+          dist_geo(j, i) = dist;
         }
       }
-      if (min_dist > tdi) {
-        outliers[i] = true;
+    }
+
+    // Calculate mean distances
+    for (int i = 0; i < species_size; ++i) {
+      double total_dist = 0.0;
+      int count = 0;
+      for (int j = 0; j < species_size; ++j) {
+        if (i != j) {
+          if (intrinsic) {
+            total_dist += dist_geo(i, j);
+          } else {
+            total_dist += inline_euclidean_distance(longitudes[indices[i]], latitudes[indices[i]],
+                                                    longitudes[indices[j]], latitudes[indices[j]]);
+          }
+          count++;
+        }
+      }
+      mean_distances[i] = total_dist / count;
+    }
+
+    // Determine outliers based on the chosen method
+    if (method == "quantile") {
+      NumericVector sorted_mean = clone(mean_distances).sort();
+      double q75 = sorted_mean[species_size * 3 / 4];
+      double iqr = q75 - sorted_mean[species_size / 4];
+      double threshold = q75 + mltpl * iqr;
+
+      for (int i = 0; i < species_size; ++i) {
+        if (mean_distances[i] > threshold) {
+          outliers[indices[i]] = true;
+        }
+      }
+    } else if (method == "mad") {
+      double median_val = inline_median(mean_distances);
+      double mad_val = inline_mad(mean_distances);
+      double threshold = median_val + mltpl * mad_val;
+
+      for (int i = 0; i < species_size; ++i) {
+        if (mean_distances[i] > threshold) {
+          outliers[indices[i]] = true;
+        }
+      }
+    } else if (method == "distance") {
+      for (int i = 0; i < species_size; ++i) {
+        double min_dist = R_PosInf;
+        for (int j = 0; j < species_size; ++j) {
+          if (i != j) {
+            double dist = (intrinsic) ? dist_geo(i, j) : inline_euclidean_distance(longitudes[indices[i]], latitudes[indices[i]],
+                           longitudes[indices[j]], latitudes[indices[j]]);
+            if (dist < min_dist) {
+              min_dist = dist;
+            }
+          }
+        }
+        if (min_dist > tdi) {
+          outliers[indices[i]] = true;
+        }
       }
     }
   }
